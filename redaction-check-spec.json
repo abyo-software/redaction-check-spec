@@ -1,0 +1,116 @@
+{
+  "specVersion": "1",
+  "title": "Redaction check specification",
+  "summary": "How to decide whether a PDF's blackouts actually removed the information under them. Two independent implementations adjudicate by these rules: the browser checker at https://abyo.net/pdf/redaction-check/ and the pre-save check in abyo PDF Editor.",
+  "scope": {
+    "answers": "For the places this document blacked out, is the hidden information gone?",
+    "doesNotAnswer": [
+      "Whether everything that should have been blacked out was. That is the author's judgement and cannot be inferred from the file.",
+      "What text an image contains. No OCR is performed."
+    ]
+  },
+  "conventions": {
+    "units": "PDF points",
+    "space": "User space after the CTM and any active clip, before /Rotate, origin bottom-left",
+    "rect": "{x0, y0, x1, y1} with x0 < x1 and y0 < y1",
+    "luminance": "L = 0.2126R + 0.7152G + 0.0722B over components in 0..1 as written in the PDF, with no gamma correction. Gray: R=G=B=g. CMYK: R=(1-C)(1-K), G=(1-M)(1-K), B=(1-Y)(1-K). Indexed resolves through its base space. A tint transform that cannot be resolved makes the paint ineligible as a blackout and is recorded in checksSkipped.",
+    "paintOrder": "Page content streams with Form XObjects expanded in place at their Do, then each annotation's /AP /N in /Annots order. Patterns are not expanded. Annotation appearances are always above page content.",
+    "glyphBox": {
+      "x": "Origin to origin plus the advance width, with Tc, Tw and Tz applied",
+      "ascentEm": 0.8,
+      "descentEm": -0.2,
+      "consultFontDescriptor": false,
+      "note": "The em-relative values are fixed deliberately. The goal is that two implementations compute the SAME coverage fraction; one reading real font metrics while the other fell back would split verdicts either side of the 0.85 boundary."
+    }
+  },
+  "verdicts": {
+    "fail": "Readable information survives a blackout",
+    "review": "A person has to look; something was found that cannot be judged mechanically",
+    "pass": "This check looked and found nothing",
+    "fileVerdict": "The worst verdict across every check that ran",
+    "wording": "A clean result must state how many checks ran and that they found nothing. It must never be expressed as safe, guaranteed or complete. A check listed in checksSkipped must not be counted as having passed."
+  },
+  "blackoutCandidate": {
+    "note": "What counts as a blackout. All conditions must hold. The point of the thresholds is to avoid mistaking a black heading band, a table rule or a scanned page for redaction.",
+    "maxLuminance": 0.25,
+    "minAlpha": 0.95,
+    "softMaskDisqualifies": true,
+    "opaqueBlendModes": ["Normal", "Compatible", "Multiply", "Darken"],
+    "minShortSidePt": 3.0,
+    "minLongSidePt": 6.0,
+    "areaCondition": null,
+    "minRectangularity": 0.9,
+    "rectangularityMeasuredAgainst": "The smallest enclosing rectangle at any angle, so a rotated bar is judged on its own terms rather than against an axis-aligned box",
+    "strokeAsCandidate": { "minWidthPt": 4.0, "extent": "The path grown by half the pen width" },
+    "imageAsCandidate": {
+      "minDarkPixelShare": 0.95,
+      "note": "An opaque image is a blackout only when its own decoded pixels are mostly dark. Without this, a scanned page — one big opaque image, usually over an OCR text layer — reads as a blackout hiding the text beneath it, and every scanned-and-OCRd document is reported as leaking."
+    },
+    "imageMaskAsCandidate": "A mask paints in the current fill colour; its darkness is that colour's",
+    "nonDarkOpaqueCover": "An opaque cover that is not dark (a white or grey box over text) hides the text from a reader but is also what a spreadsheet does to an overflowing cell. It is A1 review, never a failure."
+  },
+  "imageDecoding": {
+    "note": "An implementation that cannot decode an image's pixels must say so rather than guess in either direction.",
+    "undecodableImageIsNotACandidate": true,
+    "a6Verdict": "review",
+    "a4BackgroundIsImage": "review when the pixels cannot be read",
+    "neverPass": true,
+    "checksSkippedReason": "image-codec-not-decodable:<Filter name without a slash, e.g. DCTDecode>"
+  },
+  "checks": [
+    { "id": "A1", "rule": "Extractable text painted BEFORE an opaque cover, with coverage >= 0.85", "verdict": "fail for a blackout candidate, review for a non-dark opaque cover" },
+    { "id": "A2", "rule": "Extractable text painted before a blackout with 0.15 <= coverage < 0.85, so part of it still shows", "verdict": "fail" },
+    { "id": "A3", "rule": "A /Redact annotation present at all, which means the redaction was never applied; or a concealing annotation appearance (Square, FreeText, Highlight, Stamp) covering text with coverage >= 0.15", "verdict": "fail" },
+    { "id": "A4", "rule": "Text whose colour is within 0.15 luminance of the background, where the background is the last fill painted at the glyph centre BEFORE the run and paper white when there is none; or a glyph box outside the CropBox or entirely outside the clip", "verdict": "Same as background: fail regardless of distance, because colouring text to match its background is concealment in itself. Outside the clip or CropBox: fail within 20pt of a blackout, otherwise review." },
+    { "id": "A5", "rule": "Text with rendering mode 3 or 7, which paints nothing, with coverage >= 0.15 against a blackout. The OCR layer of a scan is usually this", "verdict": "fail" },
+    { "id": "A6", "rule": "A blackout over an image painted earlier, AND the image's own decoded pixels in the covered region are dark in less than 0.95 of samples", "verdict": "fail; review when the pixels cannot be read", "note": "The pixel condition is essential. Redacting an image properly rewrites its pixels AND draws a bar, so a check that stopped at 'a bar covers an image' would report every correct redaction as a failure." },
+    { "id": "A7", "rule": "More than one document revision in the file, with text present in a superseded revision that the final revision does not contain", "verdict": "fail; review when revisions exist but cannot be parsed" },
+    { "id": "A8", "rule": "/ActualText, /Alt or /E in the structure tree or in BDC properties whose contents are absent from the page's extractable text while that page carries a blackout", "verdict": "fail; otherwise listed under A9 as review" },
+    { "id": "A9", "rule": "Data that survives a visual redaction because it was never on the page: document info and XMP, bookmarks, attachments, form values, annotation text, hidden layers, embedded thumbnails, JavaScript, signatures", "verdict": "review, listed with its contents" },
+    { "id": "A10", "rule": "A page with no extractable text carrying an image that covers at least 80% of the CropBox", "verdict": "review" },
+    { "id": "A11", "rule": "Encrypted and not openable with an empty user password, with no password supplied", "verdict": "review" }
+  ],
+  "report": {
+    "required": ["specVersion", "fileName", "byteLength", "sha256", "pageCount", "verdict", "findings", "checksRun", "checksSkipped"],
+    "optional": ["implementation", "pageSizes", "notInspected", "elapsedMs", "error"],
+    "finding": {
+      "check": "A1..A11",
+      "verdict": "fail | review",
+      "page": "1-based, or null for a document-level finding",
+      "rect": "{x0,y0,x1,y1} or null",
+      "recovered": "Text recovered from under the blackout. DISPLAY ONLY. It must never be written to a saved report, a log or a file: a report is filed and forwarded, and putting the exposed data in it turns a check into a second disclosure.",
+      "detail": "Human-readable specifics",
+      "evidence": "Machine-comparable values: coveredFraction, candidateSource, luminance, revisionIndex"
+    },
+    "checksSkipped": "[{check, reason}] — a check that could not run is recorded, never dropped. 'Nothing found' is only meaningful alongside 'here is what was examined'."
+  },
+  "manifest": {
+    "case": {
+      "file": "NN-<slug>.pdf",
+      "expect": {
+        "verdict": "fail | review | pass",
+        "checks": "Check ids that must be raised",
+        "mustNotFlag": "Check ids that would be a false positive on this file; raising one fails the suite",
+        "acceptVerdicts": "Verdicts that are all acceptable, for cases whose outcome depends on whether an implementation can decode a particular image codec. Must include verdict and must not add pass."
+      },
+      "note": "string",
+      "source": "generated | acrobat | abyo-editor",
+      "editorOnly": "boolean",
+      "pending": "boolean, for a case whose file does not exist yet",
+      "madeBy": "How a non-generated file was produced"
+    },
+    "numbering": {
+      "1-15": "The shared corpus from the checker requirements",
+      "16+": "Editor-only cases",
+      "90+": "Locally generated stand-ins for cases whose real article needs a specific application"
+    }
+  },
+  "limits": {
+    "note": "Guards so a hostile or broken file cannot hang the tool. Exceeding one is recorded in checksSkipped, not silently ignored.",
+    "maxPages": 2000,
+    "maxBytes": 314572800,
+    "maxOperatorsPerPage": 1500000,
+    "imageSampleCount": 4096,
+    "maxRecoveredChars": 400
+  }
+}
